@@ -1,0 +1,155 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8" />
+  <title>Code Concept Extractor</title>
+  <style>
+    :root { color-scheme: light; }
+    body { font-family: "Segoe UI", sans-serif; margin: 24px; background: #f7f9fb; }
+    h1 { margin-bottom: 12px; }
+    .panel { background: #fff; border: 1px solid #e1e5ee; border-radius: 8px;
+             padding: 16px; box-shadow: 0 4px 10px rgba(0,0,0,0.04); }
+    .row { display: flex; gap: 16px; flex-wrap: wrap; }
+    .col { flex: 1 1 320px; }
+    label { font-weight: 600; display: block; margin-bottom: 4px; }
+    select, button, textarea, input { font-size: 14px; }
+    button { padding: 8px 12px; border: none; border-radius: 6px;
+             background: #2563eb; color: #fff; cursor: pointer; }
+    button:hover { background: #1d4ed8; }
+    #editor { height: 320px; width: 100%; border: 1px solid #d7dce5; border-radius: 8px; }
+    #results { margin-top: 16px; display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 12px; }
+    .card { background: #fff; border: 1px solid #e1e5ee; border-radius: 8px; padding: 12px; }
+    .card h3 { margin: 0 0 8px 0; font-size: 15px; }
+    .badge { display: inline-block; padding: 4px 8px; margin: 2px;
+             border-radius: 6px; background: #eef2ff; color: #1d4ed8; font-family: monospace; }
+    textarea { width: 100%; height: 120px; border-radius: 6px; border: 1px solid #d7dce5; padding: 8px; box-sizing: border-box; }
+  </style>
+</head>
+<body>
+  <h1>Code Concept Extractor</h1>
+
+  <div class="panel">
+    <div class="row">
+      <div class="col">
+        <label for="lang">Language</label>
+        <select id="lang">
+          <option value="c">C</option>
+          <option value="python">Python</option>
+          <option value="javascript">JavaScript</option>
+        </select>
+      </div>
+      <div class="col">
+        <label for="targets">検出したい概念（改行区切り、空欄=全件）</label>
+        <textarea id="targets" placeholder="例: if&#10;for&#10;int&#10;printf"></textarea>
+      </div>
+    </div>
+
+    <div style="margin-top:12px;">
+      <label>Code</label>
+      <div id="editor"></div>
+    </div>
+
+    <div style="margin-top:12px;">
+      <button id="analyze">Analyze</button>
+    </div>
+
+    <div id="results"></div>
+  </div>
+
+  <!-- Ace Editor CDN。オフラインなら同じフォルダに ace.js を置き、src を ./ace.js に変更 -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/ace/1.32.3/ace.js" integrity="sha512-nxDs1htnM5nDTonCr5thpLDbNYDF2Ppt9XLC1Ol6C4wES25oTFkjF2N0yyXzHw1ayQ/9fJ0nzWyn4hn8ShV6LQ==" crossorigin="anonymous" referrerpolicy="no-referrer"></script>
+
+  <script>
+    let useTextareaFallback = false;
+    let editor;
+    const endpoint = "http://127.0.0.1:8001/analyze";
+    const modeMap = { c: "ace/mode/c_cpp", python: "ace/mode/python", javascript: "ace/mode/javascript" };
+
+    try {
+      if (typeof ace === "undefined") throw new Error("Ace not loaded");
+      editor = ace.edit("editor");
+      editor.setTheme("ace/theme/github");
+      const langSel = document.getElementById("lang");
+      editor.session.setMode(modeMap[langSel.value] || "ace/mode/text");
+      langSel.onchange = (e) => editor.session.setMode(modeMap[e.target.value] || "ace/mode/text");
+      editor.setValue(
+`int main(void){
+  int i;
+  for (i = 0; i <= 100; i++){
+    int FizzBuzz = i % 15;
+    int Fizz = i % 3;
+    int Buzz = i % 5;
+    if (FizzBuzz == 0 && i != 0){
+      printf("FizzBuzz: %d\\n", i);
+    } else if (Fizz == 0 && i != 0){
+      printf("Fizz: %d\\n", i);
+    } else if (Buzz == 0 && i != 0){
+      printf("Buzz: %d\\n", i);
+    } else {
+      printf("i: %d\\n", i);
+    }
+  }
+  return 0;
+};`, -1);
+    } catch (e) {
+      console.warn("Ace が使えないため textarea にフォールバックします:", e);
+      useTextareaFallback = true;
+      document.getElementById("editor").style.display = "none";
+      const ta = document.createElement("textarea");
+      ta.id = "code-fallback";
+      ta.style.width = "100%";
+      ta.style.height = "320px";
+      ta.value = "int main(void){\n  // ここにコードを入力\n}\n";
+      document.querySelector(".panel").insertBefore(ta, document.getElementById("results"));
+    }
+
+    document.getElementById("analyze").onclick = async () => {
+      const code = useTextareaFallback
+        ? document.getElementById("code-fallback").value
+        : editor.getValue();
+      const language = document.getElementById("lang").value;
+      const targetsRaw = document.getElementById("targets").value;
+      const targets = targetsRaw.split(/\r?\n/).map(t => t.trim()).filter(t => t);
+
+      const res = await fetch(endpoint, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ code, language, targets: targets.length ? targets : null }),
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        alert("Error: " + res.status + " " + JSON.stringify(err));
+        return;
+      }
+      const data = await res.json();
+      render(data);
+    };
+
+    function render(data) {
+      const container = document.getElementById("results");
+      container.innerHTML = "";
+      Object.entries(data).forEach(([k, arr]) => {
+        const card = document.createElement("div");
+        card.className = "card";
+        const h = document.createElement("h3");
+        h.textContent = k;
+        card.appendChild(h);
+        if (!arr.length) {
+          const empty = document.createElement("div");
+          empty.textContent = "(none)";
+          empty.style.color = "#94a3b8";
+          card.appendChild(empty);
+        } else {
+          arr.forEach(item => {
+            const b = document.createElement("span");
+            b.className = "badge";
+            b.textContent = item;
+            card.appendChild(b);
+          });
+        }
+        container.appendChild(card);
+      });
+    }
+  </script>
+</body>
+</html>
